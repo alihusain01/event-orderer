@@ -56,19 +56,15 @@ func handleConfiguration() {
 	}
 	defer file.Close()
 
-	fmt.Println("Successfully opened config file")
-
 	scanner := bufio.NewScanner(file)
 	scanner.Scan() // Skip the first line (number of nodes)
 
 	localIP := findLocalIP()
-	localParts := strings.Split(localIP, ":")
-
+	localPort := os.Args[1]
+	
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.Split(line, " ")
-
-		fmt.Println("Parts:", parts)
 
 		if len(parts) != 3 {
 			fmt.Println("Invalid line:", line)
@@ -81,9 +77,10 @@ func handleConfiguration() {
 			Port: parts[2],
 		}
 
+
 		// Skip if the node is the current node
-		if node.IP == localParts[0] && node.Port == localParts[1] {
-			fmt.Println("Skipping self node", node.Name)
+		if node.IP == localIP && node.Port == localPort {
+			fmt.Println("Skipping self node:", node.Name)
 			nodes = append(nodes, node)
 			continue
 		}
@@ -103,12 +100,10 @@ func handleConfiguration() {
 			node.Connection = conn
 			nodes = append(nodes, node)
 
-			fmt.Println("Successfully connected to node", node.Name)
+			fmt.Println("Successfully connected to node:", node.Name)
 		} else {
-			fmt.Println("Connection already exists for node", node.Name)
+			fmt.Println("Connection already exists for node:", node.Name)
 		}
-
-		fmt.Println("Successfully connected to node", node.Name)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -131,7 +126,7 @@ func main() {
 	PORT := ":" + arguments[1]
 	l, err := net.Listen("tcp", PORT)
 	if err != nil {
-		fmt.Println("Error: ", err)
+		fmt.Println("Error:", err)
 		return
 	}
 
@@ -140,6 +135,7 @@ func main() {
 
 	configTrigger := make(chan bool)
 	connectionTrigger := make(chan bool)
+	evalTrigger := make(chan bool)
 
 	// Goroutine for checking user input
 	go func() {
@@ -153,6 +149,18 @@ func main() {
 		}
 	}()
 
+	// Goroutine for checking user input
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			fmt.Print(">> ")
+			text, _ := reader.ReadString('\n')
+			if strings.TrimSpace(text) == "EVAL" {
+				evalTrigger <- true
+			}
+		}
+	}()
+
 	// Goroutine for accepting connections
 	go func() {
 		for {
@@ -161,8 +169,6 @@ func main() {
 				fmt.Println(err)
 				continue
 			}
-			fmt.Println("Connection accepted")
-
 			// Get IP and port of the connection
 			remoteAddr := conn.RemoteAddr().String()
 			parts := strings.Split(remoteAddr, ":")
@@ -184,8 +190,11 @@ func main() {
 			go handleConfiguration()
 		case <-connectionTrigger:
 			go handleConfiguration()
+		case <-evalTrigger:
+			for _, node := range nodes {
+				fmt.Println(node.Name, node.IP, node.Port)
+			}
 		}
 	}
-
 	return
 }
