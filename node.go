@@ -23,7 +23,7 @@ var CONFIG_PATH string
 var CURRENT_NODE string
 
 func parseConfigurationFile() {
-	file, err := os.Open("config.txt")
+	file, err := os.Open(CONFIG_PATH)
 	if err != nil {
 		fmt.Println("Error: ", err)
 		return
@@ -78,6 +78,7 @@ func handleConfiguration() {
 
 	// Iterate over the parsedConfiguration
 	for _, config := range parsedConfiguration {
+		fmt.Println("Config:", config)
 		if len(config) != 3 {
 			fmt.Println("Invalid configuration:", config)
 			continue
@@ -95,6 +96,7 @@ func handleConfiguration() {
 
 		// Check if a connection to the node already exists
 		if !connectionExists(nodeName, nodeIP, nodePort) {
+			fmt.Println("Attempting connection to node:", nodeName, "at", nodeIP+":"+nodePort)
 			conn, err := net.Dial("tcp", nodeIP+":"+nodePort)
 			if err != nil {
 				fmt.Println("Error connecting to node:", nodeName, err)
