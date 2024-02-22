@@ -22,6 +22,9 @@ var nodes []Node
 var CONFIG_PATH string
 var CURRENT_NODE string
 
+/*
+Parse the configuration file and store the contents in parsedConfiguration
+*/
 func parseConfigurationFile() {
 	file, err := os.Open(CONFIG_PATH)
 	if err != nil {
@@ -61,10 +64,11 @@ func parseConfigurationFile() {
 		return
 	}
 
-	fmt.Println("Parsed configuration file: ", parsedConfiguration)
 }
 
-// Check if a connection to the node already exists
+/* 
+Check if a connection to a node is nodes already exists
+*/
 func connectionExists(name, ip, port string) bool {
 	for _, node := range nodes {
 		if node.IP == ip && node.Port == port && node.Name == name {
@@ -74,11 +78,13 @@ func connectionExists(name, ip, port string) bool {
 	return false
 }
 
-func handleConfiguration() {
+/*
+Establishes connections with all nodes in the configuration file
+*/
 
+func handleConfiguration() {
 	// Iterate over the parsedConfiguration
 	for _, config := range parsedConfiguration {
-		fmt.Println("Config:", config)
 		if len(config) != 3 {
 			fmt.Println("Invalid configuration:", config)
 			continue
@@ -96,7 +102,6 @@ func handleConfiguration() {
 
 		// Check if a connection to the node already exists
 		if !connectionExists(nodeName, nodeIP, nodePort) {
-			fmt.Println("Attempting connection to node:", nodeName, "at", nodeIP+":"+nodePort)
 			conn, err := net.Dial("tcp", nodeIP+":"+nodePort)
 			if err != nil {
 				fmt.Println("Error connecting to node:", nodeName, err)
@@ -117,8 +122,7 @@ func handleConfiguration() {
 			fmt.Println("Connection already exists for node:", nodeName)
 		}
 	}
-
-	fmt.Println("Node configuration complete!")
+	fmt.Println("Node configuration completed! These are the currently connected nodes:", nodes)
 }
 
 func main() {
@@ -126,10 +130,6 @@ func main() {
 	/*
 		Establish node connection to port
 	*/
-
-	// fmt.Println(os.Args[0])
-	// fmt.Println(os.Args[1])
-	// fmt.Println(os.Args[2])
 
 	arguments := os.Args
 	if len(arguments) < 2 {
@@ -140,12 +140,12 @@ func main() {
 	CURRENT_NODE = arguments[1]
 	CONFIG_PATH = arguments[2]
 	var PORT string
-
+	
 	parseConfigurationFile()
 
-	// Establish a connection to the port
+	// Compares CURRENT_NODE to the confirguation file to find which port to listen on
 	for line := range parsedConfiguration {
-		if parsedConfiguration[line][0] == CURRENT_NODE {
+		if parsedConfiguration[line][0] == CURRENT_NODE { // If found, add self-connection to nodes list
 			PORT = ":" + parsedConfiguration[line][2]
 			var node = Node{
 				Name: parsedConfiguration[line][0],
@@ -153,7 +153,6 @@ func main() {
 				Port: PORT[1:],
 			}
 			nodes = append(nodes, node)
-			// fmt.Println("PORT: ", PORT)
 		}
 	}
 
@@ -161,19 +160,16 @@ func main() {
 		fmt.Println("Node not found in configuration file")
 	}
 
+	// Establish listener to specified port
 	l, err := net.Listen("tcp", PORT)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
-
 	fmt.Println("Server listening on port: ", PORT[1:])
 	defer l.Close()
 
-	configTrigger := make(chan bool)
-	evalTrigger := make(chan bool)
-
-	// Goroutine for handling incoming connections
+	// Handler for incoming connections. If a connection is established, add it to the nodes list
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -217,7 +213,10 @@ func main() {
 		}
 	}()
 
-	// Goroutine for checking user input
+	configTrigger := make(chan bool)
+	evalTrigger := make(chan bool)
+
+	// Handler for reading user input. If "CONFIG" is entered, trigger the configuration handler. If "EVAL" is entered, print the nodes list
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
@@ -235,11 +234,8 @@ func main() {
 	for {
 		select {
 		case <-configTrigger:
-			// fmt.Println("configTrigger received")
 			go handleConfiguration()
-			// fmt.Println("Configuration complete")
 		case <-evalTrigger:
-			// fmt.Println("evalTrigger received")
 			if len(nodes) == 0 {
 				fmt.Println("No nodes to evaluate")
 			} else {
