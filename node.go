@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -16,11 +18,22 @@ type Node struct {
 	Connection net.Conn
 }
 
+type Transaction struct {
+	TransactionID int
+	Transaction   string
+	Sender        string
+	Priority      int
+	Deliverable   bool
+	MessageType   string
+}
+
 var numNodes int
 var parsedConfiguration [][]string // Each element is one line of the configuration file, split by spaces
 var nodes []Node
 var CONFIG_PATH string
 var CURRENT_NODE string
+
+var transactionChannel = make(chan Transaction)
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -66,7 +79,7 @@ func parseConfigurationFile() {
 
 }
 
-/* 
+/*
 Check if a connection to a node is nodes already exists
 */
 func connectionExists(name, ip, port string) bool {
@@ -123,6 +136,63 @@ func handleConfiguration() {
 		}
 	}
 	fmt.Println("Node configuration completed! These are the currently connected nodes:", nodes)
+
+	// Goroutine to listen for transaction data from the channel and send it over the network
+	go func() {
+		for {
+			transaction := <-transactionChannel
+			// Serialize the transaction object into a byte stream
+			transactionBytes, err := json.Marshal(transaction)
+			if err != nil {
+				fmt.Println("Error serializing transaction:", err)
+				continue
+			}
+
+			// Send the serialized transaction over the network to each connected node
+			for _, node := range nodes {
+				_, err := node.Connection.Write(transactionBytes)
+				if err != nil {
+					fmt.Println("Error sending transaction to", node.Name, ":", err)
+				}
+			}
+		}
+	}()
+}
+
+func generateTransactions() {
+	// Counter for transaction ID and priority
+	var transactionID int
+	var priority int
+
+	for {
+		// Generate a random transaction
+		transactionID++
+		priority++
+		transaction := Transaction{
+			TransactionID: transactionID,
+			Transaction:   "Sample transaction",
+			Sender:        CURRENT_NODE,
+			Priority:      priority,
+			Deliverable:   true,
+			MessageType:   "message",
+		}
+
+		fmt.Println("This is working!")
+		// Serialize the transaction object into a byte stream
+		transactionBytes, err := json.Marshal(transaction)
+		if err != nil {
+			fmt.Println("Error serializing transaction:", err)
+			continue
+		}
+
+		// Send the serialized transaction over the network to each connected node
+		for _, node := range nodes {
+			_, err := node.Connection.Write(transactionBytes)
+			if err != nil {
+				fmt.Println("Error sending transaction to", node.Name, ":", err)
+			}
+		}
+	}
 }
 
 func main() {
@@ -140,7 +210,7 @@ func main() {
 	CURRENT_NODE = arguments[1]
 	CONFIG_PATH = arguments[2]
 	var PORT string
-	
+
 	parseConfigurationFile()
 
 	// Compares CURRENT_NODE to the confirguation file to find which port to listen on
@@ -227,6 +297,15 @@ func main() {
 				// fmt.Print("configTrigger sent\n")
 			case "EVAL":
 				evalTrigger <- true
+			case "START":
+				// Run the Python command to start generating transactions
+				cmd := exec.Command("python3", "-u", "gentx.py", "0.5", "|", "./mp1_node", "node1", "config.txt")
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				err := cmd.Run()
+				if err != nil {
+					fmt.Println("Error running command:", err)
+				}
 			}
 		}
 	}()
