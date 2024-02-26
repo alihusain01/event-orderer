@@ -2,8 +2,9 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
+	"io"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -22,7 +23,7 @@ type Transaction struct {
 	TransactionID int
 	Transaction   string
 	Sender        string
-	Priority      int
+	Priority      float32
 	Deliverable   bool
 	MessageType   string
 }
@@ -32,6 +33,8 @@ var parsedConfiguration [][]string // Each element is one line of the configurat
 var nodes []Node
 var CONFIG_PATH string
 var CURRENT_NODE string
+var priority float32
+var transactions []Transaction
 
 var transactionChannel = make(chan Transaction)
 
@@ -50,7 +53,7 @@ func parseConfigurationFile() {
 
 	// Advance the scanner to the first line and save it as the number of nodes
 	if scanner.Scan() {
-		numNodes, err := strconv.Atoi(scanner.Text())
+		numNodes, err = strconv.Atoi(scanner.Text())
 		fmt.Println("Number of nodes: ", numNodes)
 		if err != nil {
 			fmt.Println("Error converting number of nodes: ", err)
@@ -135,64 +138,76 @@ func handleConfiguration() {
 			fmt.Println("Connection already exists for node:", nodeName)
 		}
 	}
-	fmt.Println("Node configuration completed! These are the currently connected nodes:", nodes)
-
-	// Goroutine to listen for transaction data from the channel and send it over the network
-	go func() {
-		for {
-			transaction := <-transactionChannel
-			// Serialize the transaction object into a byte stream
-			transactionBytes, err := json.Marshal(transaction)
-			if err != nil {
-				fmt.Println("Error serializing transaction:", err)
-				continue
-			}
-
-			// Send the serialized transaction over the network to each connected node
-			for _, node := range nodes {
-				_, err := node.Connection.Write(transactionBytes)
-				if err != nil {
-					fmt.Println("Error sending transaction to", node.Name, ":", err)
-				}
-			}
-		}
-	}()
+	fmt.Println("Node configuration completed! These are the currently connected nodes:")
+	for _, node := range nodes {
+		fmt.Println(node.Name, node.IP, node.Port)
+	}
 }
 
+// This function assumes you have 'import "os/exec"' and 'import "io"'
+
 func generateTransactions() {
-	// Counter for transaction ID and priority
-	var transactionID int
-	var priority int
+	// Execute the Python script and pipe its output
+	cmd := exec.Command("python3", "-u", "gentx.py", "0.5")
+	priority = 0
+
+	// Get current node number to append to priority
+	substr := CURRENT_NODE[4:5]
+
+	intVal, err := strconv.Atoi(substr)
+	if err != nil {
+		// Handle the error, perhaps the substring is not a valid integer
+		fmt.Println("Error converting substring to int:", err)
+		return
+	}
+	currNodeNum := float32(intVal) / 10
+
+	// Create a pipe to read stdout from the cmd
+	cmdOutput, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Println("Error creating StdoutPipe for Cmd", err)
+		return
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		fmt.Println("Error starting Cmd", err)
+		return
+	}
+
+	// Read the output
+	transactionBuffer := bufio.NewReader(cmdOutput)
 
 	for {
-		// Generate a random transaction
-		transactionID++
-		priority++
+		output, _, err := transactionBuffer.ReadLine()
+		priority += 1
+		generatedTransId := rand.Intn(10000) + 1
+		generatedPriority := priority + currNodeNum
+
+		if err != nil {
+			if err == io.EOF {
+				break // End of the output
+			}
+			fmt.Println("Error reading Cmd output:", err)
+			return
+		}
+
+		// Convert the output to a Transaction object
 		transaction := Transaction{
-			TransactionID: transactionID,
-			Transaction:   "Sample transaction",
+			TransactionID: generatedTransId,
+			Transaction:   string(output),
 			Sender:        CURRENT_NODE,
-			Priority:      priority,
-			Deliverable:   true,
+			Priority:      generatedPriority,
+			Deliverable:   false,
 			MessageType:   "message",
 		}
 
-		fmt.Println("This is working!")
-		// Serialize the transaction object into a byte stream
-		transactionBytes, err := json.Marshal(transaction)
-		if err != nil {
-			fmt.Println("Error serializing transaction:", err)
-			continue
-		}
-
-		// Send the serialized transaction over the network to each connected node
-		for _, node := range nodes {
-			_, err := node.Connection.Write(transactionBytes)
-			if err != nil {
-				fmt.Println("Error sending transaction to", node.Name, ":", err)
-			}
-		}
+		// Append transactions to transactions global variable
+		transactions = append(transactions, transaction)
 	}
+
+	// Wait for the command to finish
+	cmd.Wait()
 }
 
 func main() {
@@ -294,18 +309,8 @@ func main() {
 			switch strings.TrimSpace(text) {
 			case "CONFIG":
 				configTrigger <- true
-				// fmt.Print("configTrigger sent\n")
 			case "EVAL":
 				evalTrigger <- true
-			case "START":
-				// Run the Python command to start generating transactions
-				cmd := exec.Command("python3", "-u", "gentx.py", "0.5", "|", "./mp1_node", "node1", "config.txt")
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				err := cmd.Run()
-				if err != nil {
-					fmt.Println("Error running command:", err)
-				}
 			}
 		}
 	}()
@@ -313,17 +318,20 @@ func main() {
 	for {
 		select {
 		case <-configTrigger:
-			go handleConfiguration()
+			handleConfiguration()
+			fmt.Println("Configuration completed!")
+			go generateTransactions()
 		case <-evalTrigger:
 			if len(nodes) == 0 {
 				fmt.Println("No nodes to evaluate")
 			} else {
-				for _, node := range nodes {
-					fmt.Println(node.Name, node.IP, node.Port)
-				}
+				// for _, node := range nodes {
+				// 	// fmt.Println(node.Name, node.IP, node.Port)
+				// 	fmt.Println(node.Name)
+				// }
+				fmt.Println(transactions)
 			}
 		}
 	}
-
 	return
 }
