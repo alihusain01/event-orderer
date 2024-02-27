@@ -135,6 +135,9 @@ func handleConfiguration() {
 			}
 			nodes = append(nodes, node)
 
+			// Start a goroutine to handle incoming transactions from the node
+			go handleIncomingTransactions(conn)
+
 			fmt.Println("Successfully connected to node:", nodeName)
 		} else {
 			fmt.Println("Connection already exists for node:", nodeName)
@@ -241,7 +244,7 @@ func handleIncomingTransactions(conn net.Conn) {
 			}
 			break
 		}
-		fmt.Printf("Received: %s", string(buffer[:n]))
+		// fmt.Printf("Received: %s", string(buffer[:n]))
 
 		var transactionToAppend Transaction
 
