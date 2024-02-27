@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Node struct {
@@ -36,7 +38,7 @@ var CURRENT_NODE string
 var priority float32
 var transactions []Transaction
 
-var transactionChannel = make(chan Transaction)
+var transactionMutex = &sync.Mutex{}
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -144,8 +146,6 @@ func handleConfiguration() {
 	}
 }
 
-// This function assumes you have 'import "os/exec"' and 'import "io"'
-
 func generateTransactions() {
 	// Execute the Python script and pipe its output
 	cmd := exec.Command("python3", "-u", "gentx.py", "0.5")
@@ -202,12 +202,69 @@ func generateTransactions() {
 			MessageType:   "message",
 		}
 
-		// Append transactions to transactions global variable
-		transactions = append(transactions, transaction)
+		// Serialize the transaction data
+		transactionData, err := json.Marshal(transaction)
+		if err != nil {
+			fmt.Printf("Error marshaling transaction data: %v\n", err)
+			return
+		}
+
+		// Send the transaction to all connected nodes
+		for _, node := range nodes {
+			if node.Name == CURRENT_NODE {
+				transactionMutex.Lock()
+				transactions = append(transactions, transaction)
+				transactionMutex.Unlock()
+			} else {
+				_, err = node.Connection.Write(transactionData)
+				if err != nil {
+					fmt.Printf("Error sending transaction to node %s: %v\n", node.Name, err)
+				}
+			}
+		}
 	}
 
 	// Wait for the command to finish
 	cmd.Wait()
+}
+
+func handleIncomingTransactions(conn net.Conn) {
+	defer conn.Close()
+
+	var buffer [1024]byte // Adjust size as needed
+
+	for {
+		n, err := conn.Read(buffer[:])
+		if err != nil {
+			if err != io.EOF {
+				fmt.Printf("Error reading from connection: %v\n", err)
+			}
+			break
+		}
+		fmt.Printf("Received: %s", string(buffer[:n]))
+
+		var transactionToAppend Transaction
+
+		// Deserialize the transaction data
+		err = json.Unmarshal(buffer[:n], &transactionToAppend)
+		if err != nil {
+			fmt.Printf("Error unmarshaling transaction data: %v\n", err)
+			return
+		}
+
+		// Clear the buffer
+		buffer = [1024]byte{}
+
+		// Append the transaction to the global transactions list
+		go func() {
+			transactionMutex.Lock()
+			transactions = append(transactions, transactionToAppend)
+			transactionMutex.Unlock()
+		}()
+
+	}
+
+	return
 }
 
 func main() {
@@ -286,7 +343,10 @@ func main() {
 							Connection: conn,
 						}
 						nodes = append(nodes, node)
-						fmt.Printf("Added node %s to nodes list\n", nodeName)
+
+						go handleIncomingTransactions(conn)
+
+						fmt.Printf("Added node %s to nodes list and awaiting transactions\n", nodeName)
 					} else {
 						fmt.Printf("Connection already exists for node %s\n", nodeName)
 					}
@@ -298,7 +358,7 @@ func main() {
 		}
 	}()
 
-	configTrigger := make(chan bool)
+	startTrigger := make(chan bool)
 	evalTrigger := make(chan bool)
 
 	// Handler for reading user input. If "CONFIG" is entered, trigger the configuration handler. If "EVAL" is entered, print the nodes list
@@ -307,8 +367,8 @@ func main() {
 		for {
 			text, _ := reader.ReadString('\n')
 			switch strings.TrimSpace(text) {
-			case "CONFIG":
-				configTrigger <- true
+			case "START":
+				startTrigger <- true
 			case "EVAL":
 				evalTrigger <- true
 			}
@@ -317,18 +377,13 @@ func main() {
 
 	for {
 		select {
-		case <-configTrigger:
+		case <-startTrigger:
 			handleConfiguration()
-			fmt.Println("Configuration completed!")
 			go generateTransactions()
 		case <-evalTrigger:
 			if len(nodes) == 0 {
 				fmt.Println("No nodes to evaluate")
 			} else {
-				// for _, node := range nodes {
-				// 	// fmt.Println(node.Name, node.IP, node.Port)
-				// 	fmt.Println(node.Name)
-				// }
 				fmt.Println(transactions)
 			}
 		}
