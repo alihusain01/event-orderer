@@ -248,7 +248,7 @@ func generateTransactions() {
 			Sender:        CURRENT_NODE,
 			Priority:      generatedPriority,
 			Deliverable:   false,
-			MessageType:   "message",
+			MessageType:   "init",
 		}
 
 		handlersMutex.Lock()
@@ -268,7 +268,6 @@ func generateTransactions() {
 
 func senderTransactionHandler(ch chan Transaction, initialTransaction Transaction) {
 
-	fmt.Println("Entering transaction handler")
 	proposedPriorities := []float32{}
 
 	// Serialize the transaction data
@@ -280,7 +279,6 @@ func senderTransactionHandler(ch chan Transaction, initialTransaction Transactio
 	}
 
 	proposedPriorities = append(proposedPriorities, initialTransaction.Priority)
-	fmt.Println("Proporsed priority for transaction", initialTransaction.TransactionID, ":", initialTransaction.Priority, "added")
 
 	// Broadcast transaction to all nodes
 	for _, node := range nodes {
@@ -401,6 +399,7 @@ func dispatchTransactions(conn net.Conn) {
 			receivedTransaction.MessageType = "priority"
 
 			// Add the updated transaction with proposed priority to the priority queue
+			fmt.Println("Aboout to add received transaction from", receivedTransaction.Sender, "to the priority queue")
 			transactionMutex.Lock()
 			transactions.Push(receivedTransaction)
 			transactionMutex.Unlock()
