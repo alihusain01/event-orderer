@@ -28,7 +28,7 @@ type Transaction struct {
 	Sender        string
 	Priority      float32
 	Deliverable   bool
-	MessageType   string
+	MessageType   string // "init", "proposed", or "final"
 }
 
 type PriorityQueue []Transaction
@@ -54,25 +54,15 @@ func (pq *PriorityQueue) Pop() interface{} {
 	return item
 }
 
-func (pq *PriorityQueue) update(transaction Transaction) {
+func (pq *PriorityQueue) Update(transaction Transaction) {
 	for i := range *pq {
 		if (*pq)[i].TransactionID == transaction.TransactionID {
 			(*pq)[i] = transaction
 			heap.Fix(pq, i)
-			fmt.Println("Updated priority queue:", *pq) // Print the priority queue
-			for _, tx := range *pq {
-				fmt.Printf(" {ID: %d, Priority: %.2f}", tx.TransactionID, tx.Priority)
-			}
-			fmt.Println() // Print a newline
 			return
 		}
 	}
 	heap.Push(pq, transaction)
-	fmt.Print("Updated priority queue:")
-	for _, tx := range *pq {
-		fmt.Printf(" {ID: %d, Priority: %.2f}", tx.TransactionID, tx.Priority)
-	}
-	fmt.Println() // Print a newline
 }
 
 var numNodes int
@@ -80,10 +70,16 @@ var parsedConfiguration [][]string // Each element is one line of the configurat
 var nodes []Node
 var CONFIG_PATH string
 var CURRENT_NODE string
+
 var priority float32
-var transactions []Transaction
+var priorityMutex = &sync.Mutex{}
+
+// var transactions []Transaction
+var transactions PriorityQueue
 var transactionMutex = &sync.Mutex{}
-var pq PriorityQueue
+
+var transactionHandlers = make(map[int]chan Transaction)
+var handlersMutex = &sync.Mutex{}
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -181,7 +177,7 @@ func handleConfiguration() {
 			nodes = append(nodes, node)
 
 			// Start a goroutine to handle incoming transactions from the node
-			go handleIncomingTransactions(conn)
+			go dispatchTransactions(conn)
 
 			fmt.Println("Successfully connected to node:", nodeName)
 		} else {
@@ -197,7 +193,6 @@ func handleConfiguration() {
 func generateTransactions() {
 	// Execute the Python script and pipe its output
 	cmd := exec.Command("python3", "-u", "gentx.py", "0.5")
-	priority = 0
 
 	// Get current node number to append to priority
 	substr := CURRENT_NODE[4:5]
@@ -228,9 +223,13 @@ func generateTransactions() {
 
 	for {
 		output, _, err := transactionBuffer.ReadLine()
-		priority += 1
+
 		generatedTransId := rand.Intn(10000) + 1
+
+		priorityMutex.Lock()
+		priority += 1
 		generatedPriority := priority + currNodeNum
+		priorityMutex.Unlock()
 
 		if err != nil {
 			if err == io.EOF {
@@ -250,31 +249,17 @@ func generateTransactions() {
 			MessageType:   "message",
 		}
 
-		// Add the transaction to the priority queue
-		transactionMutex.Lock()
-		pq.update(transaction)
-		transactionMutex.Unlock()
+		handlersMutex.Lock()
+		ch, exists := transactionHandlers[transaction.TransactionID]
+		if !exists {
+			ch = make(chan Transaction, 50) // buffer size as needed
+			transactionHandlers[transaction.TransactionID] = ch
+			go senderTransactionHandler(ch) // Start a new goroutine for handling this transaction ID
 
-		// Serialize the transaction data
-		transactionData, err := json.Marshal(transaction)
-		if err != nil {
-			fmt.Printf("Error marshaling transaction data: %v\n", err)
-			return
+			// Send the transaction to the sender's transaction handler we just established
+			ch <- transaction
 		}
-
-		// Send the transaction to all connected nodes
-		for _, node := range nodes {
-			if node.Name == CURRENT_NODE {
-				transactionMutex.Lock()
-				transactions = append(transactions, transaction)
-				transactionMutex.Unlock()
-			} else {
-				_, err = node.Connection.Write(transactionData)
-				if err != nil {
-					fmt.Printf("Error sending transaction to node %s: %v\n", node.Name, err)
-				}
-			}
-		}
+		handlersMutex.Unlock()
 
 	}
 
@@ -282,7 +267,86 @@ func generateTransactions() {
 	cmd.Wait()
 }
 
-func handleIncomingTransactions(conn net.Conn) {
+func senderTransactionHandler(ch chan Transaction) {
+
+	proposedPriorities := []float32{}
+
+	for transaction := range ch {
+		if transaction.MessageType == "init" {
+			// Serialize the transaction data
+			transactionData, err := json.Marshal(transaction)
+
+			if err != nil {
+				fmt.Printf("Error marshaling transaction data: %v\n", err)
+				return
+			}
+
+			proposedPriorities = append(proposedPriorities, transaction.Priority)
+
+			// Broadcast transaction to all nodes
+			for _, node := range nodes {
+				if node.Name == CURRENT_NODE {
+					transactionMutex.Lock()
+					transactions.Push(transaction)
+					transactionMutex.Unlock()
+				} else {
+					_, err = node.Connection.Write(transactionData)
+					if err != nil {
+						fmt.Printf("Error sending transaction to node %s: %v\n", node.Name, err)
+					}
+				}
+			}
+		} else if transaction.MessageType == "priority" {
+			proposedPriorities = append(proposedPriorities, transaction.Priority)
+
+			// If all nodes have proposed a priority, calculate the final priority
+			if len(proposedPriorities) == len(nodes) {
+				finalPriority := float32(0.0)
+				for _, priority := range proposedPriorities {
+					if priority > finalPriority {
+						finalPriority = priority
+					}
+				}
+
+				// Update the transaction with the final priority
+				transaction.Priority = finalPriority
+				transaction.MessageType = "final"
+
+				// Broadcast final priority to all nodes
+				for _, node := range nodes {
+					if node.Name == CURRENT_NODE {
+						transaction.Deliverable = true
+						transactionMutex.Lock()
+						transactions.Update(transaction)
+						transactionMutex.Unlock()
+					} else {
+						// Seriealize transaction data
+						transactionData, err := json.Marshal(transaction)
+
+						if err != nil {
+							fmt.Printf("Error marshaling transaction data: %v\n", err)
+							return
+						}
+
+						_, err = node.Connection.Write(transactionData)
+						if err != nil {
+							fmt.Printf("Error sending transaction to node %s: %v\n", node.Name, err)
+						}
+					}
+				}
+
+				// Clean up
+				handlersMutex.Lock()
+				delete(transactionHandlers, transaction.TransactionID)
+				handlersMutex.Unlock()
+
+				close(ch)
+			}
+		}
+	}
+}
+
+func dispatchTransactions(conn net.Conn) {
 	defer conn.Close()
 
 	var buffer [1024]byte // Adjust size as needed
@@ -297,10 +361,10 @@ func handleIncomingTransactions(conn net.Conn) {
 		}
 		// fmt.Printf("Received: %s", string(buffer[:n]))
 
-		var transactionToAppend Transaction
+		var receivedTransaction Transaction
 
 		// Deserialize the transaction data
-		err = json.Unmarshal(buffer[:n], &transactionToAppend)
+		err = json.Unmarshal(buffer[:n], &receivedTransaction)
 		if err != nil {
 			fmt.Printf("Error unmarshaling transaction data: %v\n", err)
 			return
@@ -309,60 +373,105 @@ func handleIncomingTransactions(conn net.Conn) {
 		// Clear the buffer
 		buffer = [1024]byte{}
 
-		// Append the transaction to the global transactions list
-		go func() {
+		// Broadcast message to all nodes with proposed priority
+		if receivedTransaction.MessageType == "init" {
+			// Update priority
+
+			// Get current node number to append to priority
+			substr := CURRENT_NODE[4:5]
+
+			intVal, err := strconv.Atoi(substr)
+			if err != nil {
+				// Handle the error, perhaps the substring is not a valid integer
+				fmt.Println("Error converting substring to int:", err)
+				return
+			}
+
+			currNodeNum := float32(intVal) / 10
+
+			priorityMutex.Lock()
+			priority += 1
+			proposedPriority := priority + currNodeNum
+			priorityMutex.Unlock()
+
+			receivedTransaction.Priority = proposedPriority
+			receivedTransaction.MessageType = "priority"
+
+			// Add the updated transaction with proposed priority to the priority queue
 			transactionMutex.Lock()
-			transactions = append(transactions, transactionToAppend)
+			transactions.Push(receivedTransaction)
 			transactionMutex.Unlock()
-		}()
 
+			// Serialize the transaction data to send to original sender
+			transactionData, err := json.Marshal(receivedTransaction)
+			if err != nil {
+				fmt.Printf("Error marshaling transaction data: %v\n", err)
+				return
+			}
+
+			// Send the transaction data back to the original sender
+			_, err = conn.Write(transactionData)
+			if err != nil {
+				fmt.Printf("Error sending transaction to original sender: %v\n", err)
+			}
+		} else if receivedTransaction.MessageType == "proposed" {
+			// Send the transaction to the sender's transaction handler
+			handlersMutex.Lock()
+			ch, exists := transactionHandlers[receivedTransaction.TransactionID]
+			handlersMutex.Unlock()
+			if !exists {
+				fmt.Printf("No transaction handler found for transaction ID %d\n", receivedTransaction.TransactionID)
+			} else {
+				ch <- receivedTransaction
+			}
+		} else if receivedTransaction.MessageType == "final" {
+			// Update the transaction with the final priority
+			receivedTransaction.Deliverable = true
+
+			transactionMutex.Lock()
+			transactions.Update(receivedTransaction)
+			transactionMutex.Unlock()
+		}
 	}
-
 	return
 }
 
 func testPriorityQueue() bool {
-    // Create an empty priority queue
-    var pq PriorityQueue
-    heap.Init(&pq)
+	// Create an empty priority queue
+	var pq PriorityQueue
+	heap.Init(&pq)
 
-    // Add transactions with different priorities
-    transactions := []Transaction{
-        {TransactionID: 1, Priority: 5.0},
-        {TransactionID: 2, Priority: 3.0},
-        {TransactionID: 3, Priority: 7.0},
-        {TransactionID: 4, Priority: 1.0},
-        {TransactionID: 5, Priority: 2.0},
-    }
+	// Add transactions with different priorities
+	transactions := []Transaction{
+		{TransactionID: 1, Priority: 5.0},
+		{TransactionID: 2, Priority: 3.0},
+		{TransactionID: 3, Priority: 7.0},
+		{TransactionID: 4, Priority: 1.0},
+		{TransactionID: 5, Priority: 2.0},
+	}
 
-    fmt.Println("Initial priority queue:", pq)
+	fmt.Println("Initial priority queue:", pq)
 
-    for _, tx := range transactions {
-        heap.Push(&pq, tx)
-        fmt.Println("After push:", pq)
-    }
+	for _, tx := range transactions {
+		heap.Push(&pq, tx)
+		fmt.Println("After push:", pq)
+	}
 
-    // Pop transactions from the priority queue and verify the order
-    expectedOrder := []float32{1.0, 2.0, 3.0, 5.0, 7.0}
-    for i := 0; pq.Len() > 0; i++ {
-        tx := heap.Pop(&pq).(Transaction)
-        if tx.Priority != expectedOrder[i] {
-            fmt.Printf("Expected priority %.1f, got %.1f\n", expectedOrder[i], tx.Priority)
-            return false
-        }
-        fmt.Println("After pop:", pq)
-    }
+	// Pop transactions from the priority queue and verify the order
+	expectedOrder := []float32{1.0, 2.0, 3.0, 5.0, 7.0}
+	for i := 0; pq.Len() > 0; i++ {
+		tx := heap.Pop(&pq).(Transaction)
+		if tx.Priority != expectedOrder[i] {
+			fmt.Printf("Expected priority %.1f, got %.1f\n", expectedOrder[i], tx.Priority)
+			return false
+		}
+		fmt.Println("After pop:", pq)
+	}
 
-    return true
+	return true
 }
 
 func main() {
-	testResult := testPriorityQueue()
-	if !testResult {
-		fmt.Println("Priority queue test failed. Exiting...")
-		return
-	}
-	fmt.Println("Priority queue test passed. Continuing...")
 	/*
 		Establish node connection to port
 	*/
@@ -437,7 +546,7 @@ func main() {
 						}
 						nodes = append(nodes, node)
 
-						go handleIncomingTransactions(conn)
+						go dispatchTransactions(conn)
 
 						fmt.Printf("Added node %s to nodes list and awaiting transactions\n", nodeName)
 					} else {
@@ -474,10 +583,8 @@ func main() {
 			handleConfiguration()
 			go generateTransactions()
 		case <-evalTrigger:
-			if len(nodes) == 0 {
-				fmt.Println("No nodes to evaluate")
-			} else {
-				fmt.Println(transactions)
+			for _, transaction := range transactions {
+				fmt.Println(transaction)
 			}
 		}
 	}
