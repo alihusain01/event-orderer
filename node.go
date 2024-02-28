@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,50 @@ type Transaction struct {
 	MessageType   string
 }
 
+type PriorityQueue []Transaction
+
+func (pq PriorityQueue) Len() int { return len(pq) }
+
+func (pq PriorityQueue) Less(i, j int) bool {
+	// We want Pop to give us the highest priority item, so we use less than here.
+	return pq[i].Priority < pq[j].Priority
+}
+
+func (pq PriorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
+
+func (pq *PriorityQueue) Push(x interface{}) {
+	*pq = append(*pq, x.(Transaction))
+}
+
+func (pq *PriorityQueue) Pop() interface{} {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[0 : n-1]
+	return item
+}
+
+func (pq *PriorityQueue) update(transaction Transaction) {
+	for i := range *pq {
+		if (*pq)[i].TransactionID == transaction.TransactionID {
+			(*pq)[i] = transaction
+			heap.Fix(pq, i)
+			fmt.Println("Updated priority queue:", *pq) // Print the priority queue
+			for _, tx := range *pq {
+				fmt.Printf(" {ID: %d, Priority: %.2f}", tx.TransactionID, tx.Priority)
+			}
+			fmt.Println() // Print a newline
+			return
+		}
+	}
+	heap.Push(pq, transaction)
+	fmt.Print("Updated priority queue:")
+	for _, tx := range *pq {
+		fmt.Printf(" {ID: %d, Priority: %.2f}", tx.TransactionID, tx.Priority)
+	}
+	fmt.Println() // Print a newline
+}
+
 var numNodes int
 var parsedConfiguration [][]string // Each element is one line of the configuration file, split by spaces
 var nodes []Node
@@ -37,8 +82,8 @@ var CONFIG_PATH string
 var CURRENT_NODE string
 var priority float32
 var transactions []Transaction
-
 var transactionMutex = &sync.Mutex{}
+var pq PriorityQueue
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -205,6 +250,11 @@ func generateTransactions() {
 			MessageType:   "message",
 		}
 
+		// Add the transaction to the priority queue
+		transactionMutex.Lock()
+		pq.update(transaction)
+		transactionMutex.Unlock()
+
 		// Serialize the transaction data
 		transactionData, err := json.Marshal(transaction)
 		if err != nil {
@@ -225,6 +275,7 @@ func generateTransactions() {
 				}
 			}
 		}
+
 	}
 
 	// Wait for the command to finish
@@ -270,12 +321,51 @@ func handleIncomingTransactions(conn net.Conn) {
 	return
 }
 
-func main() {
+func testPriorityQueue() bool {
+    // Create an empty priority queue
+    var pq PriorityQueue
+    heap.Init(&pq)
 
+    // Add transactions with different priorities
+    transactions := []Transaction{
+        {TransactionID: 1, Priority: 5.0},
+        {TransactionID: 2, Priority: 3.0},
+        {TransactionID: 3, Priority: 7.0},
+        {TransactionID: 4, Priority: 1.0},
+        {TransactionID: 5, Priority: 2.0},
+    }
+
+    fmt.Println("Initial priority queue:", pq)
+
+    for _, tx := range transactions {
+        heap.Push(&pq, tx)
+        fmt.Println("After push:", pq)
+    }
+
+    // Pop transactions from the priority queue and verify the order
+    expectedOrder := []float32{1.0, 2.0, 3.0, 5.0, 7.0}
+    for i := 0; pq.Len() > 0; i++ {
+        tx := heap.Pop(&pq).(Transaction)
+        if tx.Priority != expectedOrder[i] {
+            fmt.Printf("Expected priority %.1f, got %.1f\n", expectedOrder[i], tx.Priority)
+            return false
+        }
+        fmt.Println("After pop:", pq)
+    }
+
+    return true
+}
+
+func main() {
+	testResult := testPriorityQueue()
+	if !testResult {
+		fmt.Println("Priority queue test failed. Exiting...")
+		return
+	}
+	fmt.Println("Priority queue test passed. Continuing...")
 	/*
 		Establish node connection to port
 	*/
-
 	arguments := os.Args
 	if len(arguments) < 2 {
 		fmt.Println("Incorrect number of arguments")
