@@ -295,8 +295,12 @@ func senderTransactionHandler(ch chan Transaction, initialTransaction Transactio
 	}
 
 	for transaction := range ch {
+		
+		fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
+
 		if transaction.MessageType == "priority" {
 			proposedPriorities = append(proposedPriorities, transaction.Priority)
+			fmt.Println("Appending proposed priorities")
 
 			// If all nodes have proposed a priority, calculate the final priority
 			if len(proposedPriorities) == len(nodes) {
@@ -376,8 +380,6 @@ func dispatchTransactions(conn net.Conn) {
 
 		// Broadcast message to all nodes with proposed priority
 		if receivedTransaction.MessageType == "init" {
-			// Update priority
-
 			// Get current node number to append to priority
 			substr := CURRENT_NODE[4:5]
 
@@ -396,10 +398,9 @@ func dispatchTransactions(conn net.Conn) {
 			priorityMutex.Unlock()
 
 			receivedTransaction.Priority = proposedPriority
-			receivedTransaction.MessageType = "priority"
+			receivedTransaction.MessageType = "proposed"
 
 			// Add the updated transaction with proposed priority to the priority queue
-			fmt.Println("Aboout to add received transaction from", receivedTransaction.Sender, "to the priority queue")
 			transactionMutex.Lock()
 			transactions.Push(receivedTransaction)
 			transactionMutex.Unlock()
@@ -424,6 +425,7 @@ func dispatchTransactions(conn net.Conn) {
 			if !exists {
 				fmt.Printf("No transaction handler found for transaction ID %d\n", receivedTransaction.TransactionID)
 			} else {
+				fmt.Println("About to send proposed transaction", receivedTransaction.TransactionID, "to handler")
 				ch <- receivedTransaction
 			}
 		} else if receivedTransaction.MessageType == "final" {
