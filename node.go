@@ -298,7 +298,7 @@ func senderTransactionHandler(ch chan Transaction, initialTransaction Transactio
 		
 		fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
 
-		if transaction.MessageType == "priority" {
+		if transaction.MessageType == "proposed" {
 			proposedPriorities = append(proposedPriorities, transaction.Priority)
 			fmt.Println("Appending proposed priorities")
 
