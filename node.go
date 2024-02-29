@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-)
+	"time"
 
 type Node struct {
 	Name       string
@@ -67,9 +67,11 @@ func (pq *PriorityQueue) Update(transaction Transaction) {
 
 var numNodes int
 var parsedConfiguration [][]string // Each element is one line of the configuration file, split by spaces
-var nodes []Node
 var CONFIG_PATH string
 var CURRENT_NODE string
+
+var nodes []Node
+var nodesMutex = &sync.Mutex{}
 
 var priority float32
 var priorityMutex = &sync.Mutex{}
@@ -129,11 +131,13 @@ func parseConfigurationFile() {
 Check if a connection to a node is nodes already exists
 */
 func connectionExists(name, ip, port string) bool {
+	nodesMutex.Lock()
 	for _, node := range nodes {
 		if node.IP == ip && node.Port == port && node.Name == name {
 			return true
 		}
 	}
+	nodesMutex.Unlock()
 	return false
 }
 
@@ -174,10 +178,13 @@ func handleConfiguration() {
 				Port:       nodePort,
 				Connection: conn,
 			}
+
+			nodesMutex.Lock()
 			nodes = append(nodes, node)
+			nodesMutex.Unlock()
 
 			// Start a goroutine to handle incoming transactions from the node
-			go dispatchTransactions(conn)
+			go dispatchTransactions(nodeName, conn)
 
 			fmt.Println("Successfully connected to node:", nodeName)
 		} else {
@@ -185,9 +192,11 @@ func handleConfiguration() {
 		}
 	}
 	fmt.Println("Node configuration completed! These are the currently connected nodes:")
+	nodesMutex.Lock()
 	for _, node := range nodes {
 		fmt.Println(node.Name, node.IP, node.Port)
 	}
+	nodesMutex.Unlock()
 }
 
 func generateTransactions() {
@@ -221,6 +230,7 @@ func generateTransactions() {
 	// Read the output
 	transactionBuffer := bufio.NewReader(cmdOutput)
 
+	// Create a transaction object for generated event
 	for {
 		output, _, err := transactionBuffer.ReadLine()
 
@@ -280,7 +290,8 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 
 	proposedPriorities = append(proposedPriorities, initialTransaction.Priority)
 
-	// Broadcast transaction to all nodes
+	// Broadcast intitial transaction to all nodes
+	nodesMutex.Lock()
 	for _, node := range nodes {
 		if node.Name == CURRENT_NODE {
 			transactionMutex.Lock()
@@ -293,17 +304,22 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 			}
 		}
 	}
+	nodesMutex.Unlock()
 
 	for transaction := range ch {
-		
+
 		fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
 
 		if transaction.MessageType == "proposed" {
 			proposedPriorities = append(proposedPriorities, transaction.Priority)
 			fmt.Println("Appending proposed priorities")
 
+			nodesMutex.Lock()
+			nodeLength := len(nodes)
+			nodesMutex.Unlock()
+
 			// If all nodes have proposed a priority, calculate the final priority
-			if len(proposedPriorities) == len(nodes) {
+			if len(proposedPriorities) == nodeLength {
 				finalPriority := float32(0.0)
 				for _, priority := range proposedPriorities {
 					if priority > finalPriority {
@@ -316,6 +332,7 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 				transaction.MessageType = "final"
 
 				// Broadcast final priority to all nodes
+				nodesMutex.Lock()
 				for _, node := range nodes {
 					if node.Name == CURRENT_NODE {
 						transaction.Deliverable = true
@@ -337,6 +354,7 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 						}
 					}
 				}
+				nodesMutex.Unlock()
 
 				// Clean up
 				handlersMutex.Lock()
@@ -347,11 +365,36 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 			}
 		}
 	}
-
-	fmt.Println("Leaving transaction handler")
+	return
 }
 
-func dispatchTransactions(conn net.Conn) {
+func handleFailedConnection(nodeName string) {
+	// Remove the node from the nodes list
+	nodesMutex.Lock()
+	for i, node := range nodes {
+		if node.Name == nodeName {
+			nodes = append(nodes[:i], nodes[i+1:]...)
+			numNodes--
+			break
+		}
+	}
+	nodesMutex.Unlock()
+
+	// Remove any pending transactions from the priority queue
+	transactionMutex.Lock()
+	for i, transaction := range transactions {
+		if transaction.Sender == nodeName && !transaction.Deliverable {
+			transactions = append(transactions[:i], transactions[i+1:]...)
+			// Reorder the priority queue
+			heap.Init(&transactions)
+		}
+	}
+	transactionMutex.Unlock()
+
+	return
+}
+
+func dispatchTransactions(nodeName string, conn net.Conn) {
 	defer conn.Close()
 
 	var buffer [1024]byte // Adjust size as needed
@@ -359,9 +402,8 @@ func dispatchTransactions(conn net.Conn) {
 	for {
 		n, err := conn.Read(buffer[:])
 		if err != nil {
-			if err != io.EOF {
-				fmt.Printf("Error reading from connection: %v\n", err)
-			}
+			fmt.Printf("Entering handle failed connection for %s\n", nodeName)
+			handleFailedConnection(nodeName)
 			break
 		}
 		// fmt.Printf("Received: %s", string(buffer[:n]))
@@ -500,7 +542,9 @@ func main() {
 				IP:   parsedConfiguration[line][1],
 				Port: PORT[1:],
 			}
+			nodesMutex.Lock()
 			nodes = append(nodes, node)
+			nodesMutex.Unlock()
 		}
 	}
 
@@ -548,9 +592,12 @@ func main() {
 							Port:       nodePort,
 							Connection: conn,
 						}
-						nodes = append(nodes, node)
 
-						go dispatchTransactions(conn)
+						nodesMutex.Lock()
+						nodes = append(nodes, node)
+						nodesMutex.Unlock()
+
+						go dispatchTransactions(nodeName, conn)
 
 						fmt.Printf("Added node %s to nodes list and awaiting transactions\n", nodeName)
 					} else {
