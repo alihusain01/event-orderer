@@ -256,7 +256,7 @@ func generateTransactions() {
 		if !exists {
 			ch = make(chan Transaction, 50) // buffer size as needed
 			transactionHandlers[transaction.TransactionID] = ch
-			go senderTransactionHandler(ch, transaction) // Start a new goroutine for handling this transaction ID
+			go proposedPriorityFinalizer(ch, transaction) // Start a new goroutine for handling this transaction ID
 		}
 		handlersMutex.Unlock()
 
@@ -266,7 +266,7 @@ func generateTransactions() {
 	cmd.Wait()
 }
 
-func senderTransactionHandler(ch chan Transaction, initialTransaction Transaction) {
+func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transaction) {
 
 	proposedPriorities := []float32{}
 
