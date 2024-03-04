@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"io"
-	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -108,7 +106,6 @@ func parseConfigurationFile() {
 
 	// Advance the scanner to the first line and save it as the number of nodes
 	if scanner.Scan() {
-		numNodes, err = strconv.Atoi(scanner.Text())
 		numNodes, err = strconv.Atoi(scanner.Text())
 		fmt.Println("Number of nodes: ", numNodes)
 		if err != nil {
