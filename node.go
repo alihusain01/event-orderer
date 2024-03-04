@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sort"
+	"time"
 )
 
 type Node struct {
@@ -34,6 +35,7 @@ type Transaction struct {
 	Account1        string
 	Account2        string
 	Amount          int
+	Timestamp		time.Time
 }
 
 type PriorityQueue []Transaction
@@ -313,6 +315,7 @@ func generateTransactions() {
 			Account1:        account1,
 			Account2:        account2,
 			Amount:          amount,
+			Timestamp: 		 time.Now(),	
 		}
 
 		handlersMutex.Lock()
@@ -537,8 +540,11 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 		case "DEPOSIT":
 			balances[receivedTransaction.Account1] += receivedTransaction.Amount
 		case "TRANSFER":
-			balances[receivedTransaction.Account1] -= receivedTransaction.Amount
-			balances[receivedTransaction.Account2] += receivedTransaction.Amount
+			// Check if account1 has enough balance to perform the transfer
+			if balances[receivedTransaction.Account1] >= receivedTransaction.Amount {
+				balances[receivedTransaction.Account1] -= receivedTransaction.Amount
+				balances[receivedTransaction.Account2] += receivedTransaction.Amount
+			}
 		}
 		balancesMutex.Unlock()
 
@@ -624,6 +630,7 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 			fmt.Println()
 			balancesMutex.Unlock()
 			receivedTransaction.Deliverable = true
+			//var processingTime = time.Since(receivedTransaction.Timestamp)
 
 			transactionMutex.Lock()
 			transactions.Update(receivedTransaction)
