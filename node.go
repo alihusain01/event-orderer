@@ -13,7 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
+	"sort"
+)
 
 type Node struct {
 	Name       string
@@ -23,12 +24,16 @@ type Node struct {
 }
 
 type Transaction struct {
-	TransactionID int
-	Transaction   string
-	Sender        string
-	Priority      float32
-	Deliverable   bool
-	MessageType   string // "init", "proposed", or "final"
+	TransactionID   int
+	Transaction     string
+	Sender          string
+	Priority        float32
+	Deliverable     bool
+	MessageType     string // "init", "proposed", or "final"
+	TransactionType string
+	Account1        string
+	Account2        string
+	Amount          int
 }
 
 type PriorityQueue []Transaction
@@ -82,6 +87,9 @@ var transactionMutex = &sync.Mutex{}
 
 var transactionHandlers = make(map[int]chan Transaction)
 var handlersMutex = &sync.Mutex{}
+
+var balances = make(map[string]int)
+var balancesMutex = &sync.Mutex{}
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -148,11 +156,6 @@ Establishes connections with all nodes in the configuration file
 func handleConfiguration() {
 	// Iterate over the parsedConfiguration
 	for _, config := range parsedConfiguration {
-		if len(config) != 3 {
-			fmt.Println("Invalid configuration:", config)
-			continue
-		}
-
 		nodeName := config[0]
 		nodeIP := config[1]
 		nodePort := config[2]
@@ -234,7 +237,54 @@ func generateTransactions() {
 	for {
 		output, _, err := transactionBuffer.ReadLine()
 
-		fmt.Println("Received transaction:", string(output))
+		// fmt.Println("Generated transaction:", string(output))
+
+		// Split the output by spaces to extract transaction details
+		parts := strings.Split(string(output), " ")
+
+		if len(parts) < 3 {
+			fmt.Println("Invalid transaction format:", string(output))
+			continue
+		}
+
+		// Extract the transaction type, account numbers, and amount
+		transactionType := parts[0]
+		account1 := parts[1]
+		var account2 string
+		var amount int
+
+		if transactionType == "DEPOSIT" {
+			// For deposit, account1 is the account number and amount is the third part
+			account2 = ""
+			amount, _ = strconv.Atoi(parts[2])
+
+			// Check if the account already exists in the map
+			if _, ok := balances[account1]; !ok {
+				// Account does not exist, add it to the map
+				balances[account1] = amount
+			} else {
+				balances[account1] += amount
+			}
+		} else if transactionType == "TRANSFER" {
+			// For transfer, account1 is the sender, account2 is the receiver, and amount is the last part
+			account2 = strings.Split(parts[3], "->")[0]
+			amount, _ = strconv.Atoi(parts[4])
+
+			// Check if the account already exists in the map
+			if _, ok := balances[account1]; !ok {
+				// Account does not exist, add it to the map
+				balances[account1] = amount
+			} else {
+				// Ensure the transfer doesn't result in a negative balance for account1
+				if balances[account1] >= amount {
+					balances[account1] -= amount
+					balances[account2] += amount
+				} else {
+					fmt.Printf("Transfer from account %s to account %s failed: insufficient balance\n", account1, account2)
+					continue
+				}
+			}
+		}
 
 		generatedTransId := rand.Intn(10000) + 1
 
@@ -253,12 +303,16 @@ func generateTransactions() {
 
 		// Convert the output to a Transaction object
 		transaction := Transaction{
-			TransactionID: generatedTransId,
-			Transaction:   string(output),
-			Sender:        CURRENT_NODE,
-			Priority:      generatedPriority,
-			Deliverable:   false,
-			MessageType:   "init",
+			TransactionID:   generatedTransId,
+			Transaction:     string(output),
+			Sender:          CURRENT_NODE,
+			Priority:        generatedPriority,
+			Deliverable:     false,
+			MessageType:     "init",
+			TransactionType: transactionType,
+			Account1:        account1,
+			Account2:        account2,
+			Amount:          amount,
 		}
 
 		handlersMutex.Lock()
@@ -274,6 +328,34 @@ func generateTransactions() {
 
 	// Wait for the command to finish
 	cmd.Wait()
+}
+
+func runSanityScript() {
+    cmd := exec.Command("python3", "sanity.py")
+
+    // Create a pipe to write to stdin of the cmd
+    stdin, err := cmd.StdinPipe()
+    if err != nil {
+        fmt.Println("Error creating StdinPipe for Cmd", err)
+        return
+    }
+
+    // Start the command
+    if err := cmd.Start(); err != nil {
+        fmt.Println("Error starting Cmd", err)
+        return
+    }
+
+    // Write the output of your program to the stdin of the sanity script
+    go func() {
+        defer stdin.Close()
+        for _, transaction := range transactions {
+            fmt.Fprintln(stdin, transaction)
+        }
+    }()
+
+    // Wait for the command to finish
+    cmd.Wait()
 }
 
 func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transaction) {
@@ -308,11 +390,11 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 
 	for transaction := range ch {
 
-		fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
+		// fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
 
 		if transaction.MessageType == "proposed" {
 			proposedPriorities = append(proposedPriorities, transaction.Priority)
-			fmt.Println("Appending proposed priorities")
+			// fmt.Println("Appending proposed priorities")
 
 			nodesMutex.Lock()
 			nodeLength := len(nodes)
@@ -331,6 +413,37 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 				transaction.Priority = finalPriority
 				transaction.MessageType = "final"
 
+				// var output string = "BALANCES "
+				// balancesMutex.Lock()
+				// accountNames := make([]string, 0, len(balances))
+				// for account := range balances {
+				// 	accountNames = append(accountNames, account)
+				// }
+				// sort.Strings(accountNames)
+				// for _, account := range accountNames {
+				// 	output += fmt.Sprintf("%s:%d ", account, balances[account])
+				// }
+				// runSanityScript(output)
+				// balancesMutex.Unlock()
+
+				// Extract account names into a slice for sorting
+				balancesMutex.Lock()
+				accountNames := make([]string, 0, len(balances))
+				for account := range balances {
+					accountNames = append(accountNames, account)
+				}
+
+				// Sort the account names
+				sort.Strings(accountNames)
+
+				// Print the balances in sorted order
+				fmt.Print("BALANCES ")
+				for _, account := range accountNames {
+					fmt.Printf("%s:%d ", account, balances[account])
+				}
+				fmt.Println()
+				balancesMutex.Unlock()
+
 				// Broadcast final priority to all nodes
 				nodesMutex.Lock()
 				for _, node := range nodes {
@@ -340,7 +453,7 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 						transactions.Update(transaction)
 						transactionMutex.Unlock()
 					} else {
-						// Seriealize transaction data
+						// Serialize transaction data
 						transactionData, err := json.Marshal(transaction)
 
 						if err != nil {
@@ -364,6 +477,7 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 				close(ch)
 			}
 		}
+		
 	}
 	return
 }
@@ -417,8 +531,16 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 			return
 		}
 
-		// Clear the buffer
-		buffer = [1024]byte{}
+		// Update balances based on the received transaction
+		balancesMutex.Lock()
+		switch receivedTransaction.TransactionType {
+		case "DEPOSIT":
+			balances[receivedTransaction.Account1] += receivedTransaction.Amount
+		case "TRANSFER":
+			balances[receivedTransaction.Account1] -= receivedTransaction.Amount
+			balances[receivedTransaction.Account2] += receivedTransaction.Amount
+		}
+		balancesMutex.Unlock()
 
 		// Broadcast message to all nodes with proposed priority
 		if receivedTransaction.MessageType == "init" {
@@ -467,11 +589,40 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 			if !exists {
 				fmt.Printf("No transaction handler found for transaction ID %d\n", receivedTransaction.TransactionID)
 			} else {
-				fmt.Println("About to send proposed transaction", receivedTransaction.TransactionID, "to handler")
+				// fmt.Println("About to send proposed transaction", receivedTransaction.TransactionID, "to handler")
 				ch <- receivedTransaction
 			}
 		} else if receivedTransaction.MessageType == "final" {
-			// Update the transaction with the final priority
+			// var output string = "BALANCES "
+			// balancesMutex.Lock()
+			// accountNames := make([]string, 0, len(balances))
+			// for account := range balances {
+			// 	accountNames = append(accountNames, account)
+			// }
+			// sort.Strings(accountNames)
+			// for _, account := range accountNames {
+			// 	output += fmt.Sprintf("%s:%d ", account, balances[account])
+			// }
+			// runSanityScript(output)
+			// balancesMutex.Unlock()
+
+			// Extract account names into a slice for sorting
+			balancesMutex.Lock()
+			accountNames := make([]string, 0, len(balances))
+			for account := range balances {
+				accountNames = append(accountNames, account)
+			}
+
+			// Sort the account names
+			sort.Strings(accountNames)
+
+			// Print the balances in sorted order
+			fmt.Print("BALANCES ")
+			for _, account := range accountNames {
+				fmt.Printf("%s:%d ", account, balances[account])
+			}
+			fmt.Println()
+			balancesMutex.Unlock()
 			receivedTransaction.Deliverable = true
 
 			transactionMutex.Lock()
@@ -534,6 +685,7 @@ func main() {
 	parseConfigurationFile()
 
 	// Compares CURRENT_NODE to the confirguation file to find which port to listen on
+	nodesMutex.Lock()
 	for line := range parsedConfiguration {
 		if parsedConfiguration[line][0] == CURRENT_NODE { // If found, add self-connection to nodes list
 			PORT = ":" + parsedConfiguration[line][2]
@@ -542,11 +694,10 @@ func main() {
 				IP:   parsedConfiguration[line][1],
 				Port: PORT[1:],
 			}
-			nodesMutex.Lock()
 			nodes = append(nodes, node)
-			nodesMutex.Unlock()
 		}
 	}
+	nodesMutex.Unlock()
 
 	if PORT == "" {
 		fmt.Println("Node not found in configuration file")
