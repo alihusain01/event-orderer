@@ -108,7 +108,7 @@ func parseConfigurationFile() {
 	// Advance the scanner to the first line and save it as the number of nodes
 	if scanner.Scan() {
 		numNodes, err = strconv.Atoi(scanner.Text())
-		fmt.Println("Number of nodes: ", numNodes)
+		// fmt.Println("Number of nodes: ", numNodes)
 		if err != nil {
 			fmt.Println("Error converting number of nodes: ", err)
 			return
@@ -452,10 +452,17 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 			receivedTransaction.Priority = proposedPriority
 			receivedTransaction.MessageType = "proposed"
 
+			// Log the timestamp of when proposed priority is received
+			senderTimestamp := receivedTransaction.Timestamp
+			receivedTransaction.Timestamp = time.Now()
+
 			// Add the updated transaction with proposed priority to the priority queue
 			transactionMutex.Lock()
 			transactions.Push(receivedTransaction)
 			transactionMutex.Unlock()
+
+			// Update the timestamp to the original sender's timestamp
+			receivedTransaction.Timestamp = senderTimestamp
 
 			// Serialize the transaction data to send to original sender
 			transactionData, err := json.Marshal(receivedTransaction)
@@ -496,6 +503,12 @@ func processTransactions(file *os.File) {
 	for {
 		transactionMutex.Lock()
 		for len(transactions) > 0 && transactions[0].Deliverable {
+			if transactions[0].MessageType == "proposed" && time.Since(transactions[0].Timestamp).Seconds() > 5 {
+				// If the transaction has been in the queue for more than 5 seconds, remove it
+				transactions = transactions[1:]
+				continue
+			}
+
 			// Pop the top transaction from the priority queue
 			topTransaction := heap.Pop(&transactions).(Transaction)
 			// fmt.Printf("Processing transaction: %v\n", topTransaction)
@@ -653,7 +666,7 @@ func main() {
 		fmt.Println("Error:", err)
 		return
 	}
-	fmt.Println("Server listening on port: ", PORT[1:])
+	// fmt.Println("Server listening on port: ", PORT[1:])
 	defer l.Close()
 
 	// Handler for incoming connections. If a connection is established, add it to the nodes list
