@@ -10,11 +10,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"sort"
 )
 
 type Node struct {
@@ -31,7 +31,7 @@ type Transaction struct {
 	Priority      float32
 	Deliverable   bool
 	MessageType   string // "init", "proposed", or "final"
-	Timestamp	  time.Time
+	Timestamp     time.Time
 }
 
 type PriorityQueue []Transaction
@@ -243,7 +243,7 @@ func generateTransactions() {
 	for {
 		output, _, err := transactionBuffer.ReadLine()
 
-		fmt.Println("Received transaction:", string(output))
+		// fmt.Println("Received transaction:", string(output))
 
 		generatedTransId := rand.Intn(10000) + 1
 
@@ -318,11 +318,11 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 
 	for transaction := range ch {
 
-		fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
+		// fmt.Println("Handler received transaction", transaction.TransactionID, "handler")
 
 		if transaction.MessageType == "proposed" {
 			proposedPriorities = append(proposedPriorities, transaction.Priority)
-			fmt.Println("Appending proposed priorities")
+			// fmt.Println("Appending proposed priorities")
 
 			nodesMutex.Lock()
 			nodeLength := len(nodes)
@@ -350,7 +350,7 @@ func proposedPriorityFinalizer(ch chan Transaction, initialTransaction Transacti
 						transactions.Update(transaction)
 						transactionMutex.Unlock()
 					} else {
-						// Seriealize transaction data
+						// Serialize transaction data
 						transactionData, err := json.Marshal(transaction)
 
 						if err != nil {
@@ -407,28 +407,24 @@ func handleFailedConnection(nodeName string) {
 func dispatchTransactions(nodeName string, conn net.Conn) {
 	defer conn.Close()
 
-	var buffer [1024]byte // Adjust size as needed
+	decoder := json.NewDecoder(conn)
 
 	for {
-		n, err := conn.Read(buffer[:])
-		if err != nil {
-			fmt.Printf("Entering handle failed connection for %s\n", nodeName)
-			handleFailedConnection(nodeName)
-			break
-		}
-		// fmt.Printf("Received: %s", string(buffer[:n]))
-
 		var receivedTransaction Transaction
 
-		// Deserialize the transaction data
-		err = json.Unmarshal(buffer[:n], &receivedTransaction)
+		// Decode the transaction data
+		err := decoder.Decode(&receivedTransaction)
 		if err != nil {
-			fmt.Printf("Error unmarshaling transaction data: %v\n", err)
-			return
+			if err == io.EOF {
+				fmt.Printf("Connection closed by %s\n", nodeName)
+				handleFailedConnection(nodeName)
+				break
+			}
+			fmt.Printf("Error unmarshaling transaction data from %s: %v\n", nodeName, err)
+			continue // Skip this transaction and continue with the next
 		}
 
-		// Clear the buffer
-		buffer = [1024]byte{}
+		// fmt.Printf("Received transaction from %s: %+v\n", nodeName, receivedTransaction)
 
 		// Broadcast message to all nodes with proposed priority
 		if receivedTransaction.MessageType == "init" {
@@ -477,7 +473,7 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 			if !exists {
 				fmt.Printf("No transaction handler found for transaction ID %d\n", receivedTransaction.TransactionID)
 			} else {
-				fmt.Println("About to send proposed transaction", receivedTransaction.TransactionID, "to handler")
+				// fmt.Println("About to send proposed transaction", receivedTransaction.TransactionID, "to handler")
 				ch <- receivedTransaction
 			}
 		} else if receivedTransaction.MessageType == "final" {
@@ -500,16 +496,16 @@ func processTransactions(file *os.File) {
 			topTransaction := heap.Pop(&transactions).(Transaction)
 			// fmt.Printf("Processing transaction: %v\n", topTransaction)
 
-			processingTime := time.Since(topTransaction.Timestamp).Nanoseconds()
+			processingTime := time.Since(topTransaction.Timestamp).Milliseconds()
 
 			// Write the processing time to the file
-			_, err := file.WriteString(fmt.Sprintf("%d\n", processingTime))
-			if err != nil {
-				fmt.Println("Error writing to file:", err)
-			}
+            _, err := file.WriteString(fmt.Sprintf("%d\n", processingTime))
+            if err != nil {
+                fmt.Println("Error writing to file:", err)
+            }
 
 			balancesMutex.Lock()
-			
+
 			// Split the output by spaces to extract transaction details
 			parts := strings.Split(topTransaction.Transaction, " ")
 
@@ -704,6 +700,7 @@ func main() {
 				}
 			}
 		}
+
 	}()
 
 	startTrigger := make(chan bool)
