@@ -31,6 +31,7 @@ type Transaction struct {
 	Priority      float32
 	Deliverable   bool
 	MessageType   string // "init", "proposed", or "final"
+	Timestamp	  time.Time
 }
 
 type PriorityQueue []Transaction
@@ -71,6 +72,7 @@ var numNodes int
 var parsedConfiguration [][]string // Each element is one line of the configuration file, split by spaces
 var CONFIG_PATH string
 var CURRENT_NODE string
+var FREQUENCY string
 
 var nodes []Node
 var nodesMutex = &sync.Mutex{}
@@ -88,6 +90,7 @@ var handlersMutex = &sync.Mutex{}
 var balances = make(map[string]int)
 var balancesMutex = &sync.Mutex{}
 
+var processingTimes []float64
 
 /*
 Parse the configuration file and store the contents in parsedConfiguration
@@ -207,7 +210,7 @@ func handleConfiguration() {
 
 func generateTransactions() {
 	// Execute the Python script and pipe its output
-	cmd := exec.Command("python3", "-u", "gentx.py", "0.5")
+	cmd := exec.Command("python3", "-u", "gentx.py", FREQUENCY)
 
 	// Get current node number to append to priority
 	substr := CURRENT_NODE[4:5]
@@ -265,6 +268,7 @@ func generateTransactions() {
 			Priority:      generatedPriority,
 			Deliverable:   false,
 			MessageType:   "init",
+			Timestamp:     time.Now(),
 		}
 
 		handlersMutex.Lock()
@@ -488,13 +492,21 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 	return
 }
 
-func processTransactions() {
+func processTransactions(file *os.File) {
 	for {
 		transactionMutex.Lock()
 		for len(transactions) > 0 && transactions[0].Deliverable {
 			// Pop the top transaction from the priority queue
 			topTransaction := heap.Pop(&transactions).(Transaction)
 			// fmt.Printf("Processing transaction: %v\n", topTransaction)
+
+			processingTime := time.Since(topTransaction.Timestamp).Nanoseconds()
+
+			// Write the processing time to the file
+			_, err := file.WriteString(fmt.Sprintf("%d\n", processingTime))
+			if err != nil {
+				fmt.Println("Error writing to file:", err)
+			}
 
 			balancesMutex.Lock()
 			
@@ -506,7 +518,6 @@ func processTransactions() {
 			account1 := parts[1]
 			var account2 string
 			var amount int
-			
 
 			if transactionType == "DEPOSIT" {
 				// For deposit, account1 is the account number and amount is the third part
@@ -612,6 +623,7 @@ func main() {
 
 	CURRENT_NODE = arguments[1]
 	CONFIG_PATH = arguments[2]
+	FREQUENCY = arguments[3]
 	var PORT string
 
 	parseConfigurationFile()
@@ -711,7 +723,15 @@ func main() {
 		}
 	}()
 
-	go processTransactions()
+	// Create a file for writing processing times
+    file, err := os.Create("processing_times.txt")
+    if err != nil {
+        fmt.Println("Error creating file:", err)
+        return
+    }
+    defer file.Close()
+
+	go processTransactions(file)
 
 	for {
 		select {
