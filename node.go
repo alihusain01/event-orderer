@@ -108,7 +108,7 @@ func parseConfigurationFile() {
 	// Advance the scanner to the first line and save it as the number of nodes
 	if scanner.Scan() {
 		numNodes, err = strconv.Atoi(scanner.Text())
-		//fmt.Println("Number of nodes: ", numNodes)
+		// fmt.Println("Number of nodes: ", numNodes)
 		if err != nil {
 			fmt.Println("Error converting number of nodes: ", err)
 			return
@@ -459,7 +459,6 @@ func dispatchTransactions(nodeName string, conn net.Conn) {
 
 			// Update the timestamp to the original sender's timestamp
 			receivedTransaction.Timestamp = senderTimestamp
-
 
 			// Serialize the transaction data to send to original sender
 			transactionData, err := json.Marshal(receivedTransaction)
